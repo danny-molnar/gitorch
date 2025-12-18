@@ -1,3 +1,3 @@
-module github.com/danny-molnar/gitorchk
+module github.com/danny-molnar/gitorch
 
-go 1.22
+go 1.24.3
