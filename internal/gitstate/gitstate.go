@@ -19,6 +19,12 @@ type State struct {
 	BehindBy  int
 	Dirty     bool
 	HasRemote bool
+
+	DetachedHEAD         bool
+	HasUpstream          bool
+	Upstream             string
+	MissingDefaultLocal  bool
+	MissingDefaultRemote bool
 }
 
 // Inspect inspects the Git repository at repoPath and returns a summary of the
@@ -35,9 +41,26 @@ func Inspect(repoPath, defaultBranch, remoteName string) (State, error) {
 		return s, fmt.Errorf("not inside a Git repository: %w", err)
 	}
 
-	// Determine current branch (best effort; not strictly required for now)
+	// Determine current branch
 	if out, err := runGitOutput(repoPath, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-		s.CurrentBranch = strings.TrimSpace(out)
+		br := strings.TrimSpace(out)
+		if br == "HEAD" {
+			s.DetachedHEAD = true
+		} else {
+			s.CurrentBranch = br
+		}
+	}
+
+	// Determine upstream for current branch (if not detached)
+	if !s.DetachedHEAD && s.CurrentBranch != "" {
+		if up, err := runGitOutput(repoPath,
+			"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}",
+		); err == nil {
+			s.HasUpstream = true
+			s.Upstream = strings.TrimSpace(up)
+		} else {
+			s.HasUpstream = false
+		}
 	}
 
 	// Check for remote
@@ -57,11 +80,30 @@ func Inspect(repoPath, defaultBranch, remoteName string) (State, error) {
 		}
 	}
 
-	// Determine ahead/behind status relative to remote/defaultBranch
-	// git rev-list --left-right --count A...B
-	// A = local, B = remote; output: "<ahead> <behind>"
-	remoteRef := fmt.Sprintf("%s/%s", remoteName, defaultBranch)
-	spec := fmt.Sprintf("%s...%s", defaultBranch, remoteRef)
+	// Determine ahead/behind status relative to remote/defaultBranch.
+	// First detect whether the local and remote default branches actually exist.
+
+	localRef := fmt.Sprintf("refs/heads/%s", defaultBranch)
+	remoteRef := fmt.Sprintf("refs/remotes/%s/%s", remoteName, defaultBranch)
+
+	if err := runGit(repoPath, "show-ref", "--verify", "--quiet", localRef); err != nil {
+		s.MissingDefaultLocal = true
+	}
+
+	if s.HasRemote {
+		if err := runGit(repoPath, "show-ref", "--verify", "--quiet", remoteRef); err != nil {
+			s.MissingDefaultRemote = true
+		}
+	}
+
+	// If either side is missing, we cannot compute ahead/behind counts.
+	// Leave AheadBy/BehindBy at 0 and return gracefully.
+	if s.MissingDefaultLocal || s.MissingDefaultRemote {
+		return s, nil
+	}
+
+	// At this point both local and remote default branches exist.
+	spec := fmt.Sprintf("%s...%s/%s", defaultBranch, remoteName, defaultBranch)
 
 	out, err := runGitOutput(repoPath, "rev-list", "--left-right", "--count", spec)
 	if err != nil {

@@ -7,68 +7,150 @@ import (
 	"github.com/danny-molnar/gitorch/internal/gitstate"
 )
 
+type Code string
+
+const (
+	CodeUpToDate   Code = "up_to_date"
+	CodeAheadOnly  Code = "ahead_only"
+	CodeBehindOnly Code = "behind_only"
+	CodeDiverged   Code = "diverged"
+	CodeDirty      Code = "dirty"
+	CodeNoRemote   Code = "no_remote"
+
+	CodeDetachedHEAD         Code = "detached_head"
+	CodeNoUpstream           Code = "no_upstream"
+	CodeMissingDefaultBranch Code = "missing_default_branch"
+)
+
 type Advice struct {
-	Summary  string
-	Messages []string
+	Codes   []Code
+	Summary string
+	Details []string
 }
 
 func Explain(s gitstate.State) Advice {
-	var msgs []string
-
-	if s.DefaultBranch == "" {
-		s.DefaultBranch = "main"
-	}
-	if s.RemoteName == "" {
-		s.RemoteName = "origin"
-	}
+	var a Advice
 
 	if !s.HasRemote {
-		msgs = append(msgs,
-			fmt.Sprintf("No remote named %q found for this repository.", s.RemoteName),
-			"Add a remote or run gitorch with the correct -remote flag.",
+		a.Codes = append(a.Codes, CodeNoRemote)
+
+		remote := s.RemoteName
+		if remote == "" {
+			remote = "origin"
+		}
+
+		msg := fmt.Sprintf(
+			"No remote %q configured; add it with `git remote add %s <url>`.",
+			remote, remote,
 		)
-		return Advice{
-			Summary:  msgs[0],
-			Messages: msgs,
+		a.Details = append(a.Details, msg)
+
+		if a.Summary == "" {
+			a.Summary = msg
 		}
 	}
 
-	remoteRef := fmt.Sprintf("%s/%s", s.RemoteName, s.DefaultBranch)
+	// Detached HEAD
+	if s.DetachedHEAD {
+		a.Codes = append(a.Codes, CodeDetachedHEAD)
+		msg := "HEAD is detached; checkout a branch (e.g. `git switch " + s.DefaultBranch + "`) before running gitorch."
+		a.Details = append(a.Details, msg)
+		if a.Summary == "" {
+			a.Summary = "HEAD is detached."
+		}
+	}
 
-	// Summary & messages based on behind/ahead/dirty
-	switch {
-	case s.BehindBy > 0 && s.AheadBy == 0:
-		msgs = append(msgs,
-			fmt.Sprintf("Your local %q branch is behind %q by %d commit(s).", s.DefaultBranch, remoteRef, s.BehindBy),
-			fmt.Sprintf("Suggested: git pull --rebase %s %s", s.RemoteName, s.DefaultBranch),
-			"Alternatively: git merge if you prefer a merge-based workflow.",
+	// No upstream for current branch
+	if !s.DetachedHEAD && s.CurrentBranch != "" && !s.HasUpstream && s.HasRemote {
+		a.Codes = append(a.Codes, CodeNoUpstream)
+
+		remote := s.RemoteName
+		if remote == "" {
+			remote = "origin"
+		}
+
+		msg := fmt.Sprintf(
+			"Branch %q has no upstream configured; set it with `git push -u %s %s`.",
+			s.CurrentBranch, remote, s.CurrentBranch,
 		)
-	case s.BehindBy == 0 && s.AheadBy > 0:
-		msgs = append(msgs,
-			fmt.Sprintf("Your local %q branch is ahead of %q by %d commit(s).", s.DefaultBranch, remoteRef, s.AheadBy),
-			fmt.Sprintf("Suggested: git push %s %s", s.RemoteName, s.DefaultBranch),
-		)
-	case s.BehindBy > 0 && s.AheadBy > 0:
-		msgs = append(msgs,
-			fmt.Sprintf("Your local %q branch has diverged from %q (ahead by %d, behind by %d).", s.DefaultBranch, remoteRef, s.AheadBy, s.BehindBy),
-			fmt.Sprintf("Suggested: git pull --rebase %s %s", s.RemoteName, s.DefaultBranch),
-			"Review the history before pushing to avoid surprises.",
-		)
-	default:
-		msgs = append(msgs,
-			fmt.Sprintf("Your local %q branch is up-to-date with %q.", s.DefaultBranch, remoteRef),
-		)
+		a.Details = append(a.Details, msg)
+		if a.Summary == "" {
+			a.Summary = "Current branch has no upstream configured."
+		}
+	}
+
+	// Missing default branch (local, remote, or both)
+	if s.MissingDefaultLocal || s.MissingDefaultRemote {
+		a.Codes = append(a.Codes, CodeMissingDefaultBranch)
+
+		switch {
+		case s.MissingDefaultLocal && s.MissingDefaultRemote:
+			msg := fmt.Sprintf("Default branch %q does not exist locally or on %s.", s.DefaultBranch, s.RemoteName)
+			a.Details = append(a.Details, msg)
+			if a.Summary == "" {
+				a.Summary = msg
+			}
+		case s.MissingDefaultLocal:
+			msg := fmt.Sprintf("Local default branch %q does not exist; fetch or create it before comparing.", s.DefaultBranch)
+			a.Details = append(a.Details, msg)
+			if a.Summary == "" {
+				a.Summary = msg
+			}
+		case s.MissingDefaultRemote:
+			msg := fmt.Sprintf("Remote default branch %s/%s does not exist; push or configure the remote default branch.", s.RemoteName, s.DefaultBranch)
+			a.Details = append(a.Details, msg)
+			if a.Summary == "" {
+				a.Summary = msg
+			}
+		}
 	}
 
 	if s.Dirty {
-		msgs = append(msgs,
-			"Working tree has uncommitted or unstaged changes.",
-			"Suggested: git status; commit or stash before rebasing, merging, or pushing.",
-		)
+		a.Codes = append(a.Codes, CodeDirty)
+		a.Details = append(a.Details, "Working tree has uncommitted changes.")
 	}
 
-	return Advice{
-		Summary:  msgs[0],
-		Messages: msgs,
+	switch {
+	case s.AheadBy == 0 && s.BehindBy == 0:
+		a.Codes = append(a.Codes, CodeUpToDate)
+		if a.Summary == "" {
+			a.Summary = "Branch is up to date with remote."
+		}
+
+	case s.AheadBy > 0 && s.BehindBy == 0:
+		a.Codes = append(a.Codes, CodeAheadOnly)
+		a.Details = append(a.Details,
+			fmt.Sprintf("Branch is ahead of %s/%s by %d commits; consider pushing.",
+				s.RemoteName, s.DefaultBranch, s.AheadBy),
+		)
+		if a.Summary == "" {
+			a.Summary = "Branch is ahead of remote."
+		}
+
+	case s.AheadBy == 0 && s.BehindBy > 0:
+		a.Codes = append(a.Codes, CodeBehindOnly)
+		a.Details = append(a.Details,
+			fmt.Sprintf("Branch is behind %s/%s by %d commits; consider pulling.",
+				s.RemoteName, s.DefaultBranch, s.BehindBy),
+		)
+		if a.Summary == "" {
+			a.Summary = "Branch is behind remote."
+		}
+
+	case s.AheadBy > 0 && s.BehindBy > 0:
+		a.Codes = append(a.Codes, CodeDiverged)
+		a.Details = append(a.Details,
+			fmt.Sprintf("Branch has diverged from %s/%s (ahead by %d, behind by %d); consider `git pull --rebase`.",
+				s.RemoteName, s.DefaultBranch, s.AheadBy, s.BehindBy),
+		)
+		if a.Summary == "" {
+			a.Summary = "Branch has diverged from remote."
+		}
 	}
+
+	if a.Summary == "" {
+		a.Summary = "No specific advice."
+	}
+
+	return a
 }
