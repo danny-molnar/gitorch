@@ -1,123 +1,188 @@
-# gitorch (formerly gitorchk)
+# README.md
 
-**gitorch** is a lightweight command-line tool written in Go that helps you understand the state of your local Git repository at a glance.  
-It inspects your branch, compares it with its remote, and provides clear, actionable advice — whether you're ahead, behind, diverged, or have uncommitted changes.
+# gitorch
 
-This tool grew from a simple behind/ahead checker into a structured CLI with internal Git state analysis and a human-friendly advice engine.
+**gitorch** is a small CLI that inspects your Git repository and tells you what
+your branch needs next — pull, push, rebase, or nothing at all.
+
+It focuses on *state and guidance*, not raw Git output.
+
+---
+
+## What gitorch does
+
+Given a repository, a default branch, and a remote, gitorch:
+
+* Compares the local default branch against the remote default branch
+* Detects:
+
+  * ahead / behind / diverged states
+  * dirty working tree
+  * missing remote
+  * missing default branch (local and/or remote)
+  * detached HEAD
+  * missing upstream for the current branch
+* Produces:
+
+  * a one-line summary
+  * optional detailed guidance
+  * optional machine-readable JSON
 
 ---
 
 ## Installation
 
-Until the module/repo rename is complete, install using:
-
 ```bash
-go install github.com/danny-molnar/gitorchk/cmd/gitorch@latest
+go install github.com/danny-molnar/gitorch/cmd/gitorch@latest
 ```
-
-Ensure your Go environment is configured correctly and your `$GOPATH/bin` or `$GGOBIN` is in your system PATH.
 
 ---
 
 ## Usage
 
-Run `gitorch` inside any Git repository:
+```bash
+gitorch [flags]
+```
+
+### Flags
+
+| Flag      | Description                        | Default  |
+| --------- | ---------------------------------- | -------- |
+| `-branch` | Default branch to compare against  | `main`   |
+| `-remote` | Remote name to compare against     | `origin` |
+| `-quiet`  | Print summary only                 | `false`  |
+| `-json`   | Print JSON output (state + advice) | `false`  |
+
+> Note: gitorch uses Go’s standard `flag` package, so flags are single-dash
+> (e.g. `-quiet`, not `--quiet`).
+
+---
+
+## Examples
+
+### Up-to-date branch
 
 ```bash
-gitorch
-```
-
-By default, gitorch compares:
-
-- local `main`  
-- against `origin/main`
-
-### Example output
-
-```
-Your local "main" branch is behind "origin/main" by 3 commit(s).
-
-• Suggested: git pull --rebase origin main
-• Alternatively: git merge if you prefer a merge-based workflow.
-```
-
-If your working tree is dirty:
-
-```
-Working tree has uncommitted or unstaged changes.
-• Suggested: git status; commit or stash before rebasing, merging, or pushing.
+$ gitorch
+Branch is up to date with remote.
 ```
 
 ---
 
-## Flags
-
-Override the default branch or remote:
+### Branch ahead of remote
 
 ```bash
-gitorch -branch develop
-gitorch -remote upstream
-gitorch -branch release -remote github
-```
+$ gitorch
+Branch is ahead of remote.
 
-Flags:
-
-| Flag        | Description                                   | Default |
-|-------------|-----------------------------------------------|---------|
-| `-branch`   | Branch to compare against its upstream remote | `main`  |
-| `-remote`   | Name of the Git remote                        | `origin` |
-
----
-
-## Features
-
-Current capabilities:
-
-- Detects whether your local branch is **ahead**, **behind**, or **diverged** from its remote.
-- Provides **actionable advice** (rebase, pull, push, etc.).
-- Warns when the working tree is **dirty** (staged/unstaged changes).
-- Supports custom branch and remote names.
-- Structured architecture (`cmd/`, `internal/gitstate`, `internal/advice`) for future expansion.
-
-Planned features (Issue #5):
-
-- JSON output mode (`--json`)
-- More detailed divergence analysis
-- Improved CLI UX (quiet mode, summary-only mode)
-- Module/repo rename to `gitorch`
-- Test coverage for gitstate and advice modules
-
----
-
-## Project Structure
-
-```
-.
-├── cmd/
-│   └── gitorch/
-│       └── main.go         # CLI entrypoint
-├── internal/
-│   ├── gitstate/           # Git inspection logic
-│       └── gitstate.go
-│   └── advice/             # Advice engine for user-facing messaging
-│       └── advice.go
-├── go.mod
-└── README.md
+• Branch is ahead of origin/main by 2 commits; consider pushing.
 ```
 
 ---
 
-## Contributing
+### Branch behind remote
 
-Contributions are welcome!  
-If you have an idea, find a bug, or want to help shape gitorch’s direction:
+```bash
+$ gitorch
+Branch is behind remote.
 
-- Open an issue  
-- Submit a PR  
-- Or join the discussion on Issue #5 (refactor & rebrand)
+• Branch is behind origin/main by 3 commits; consider pulling.
+```
+
+---
+
+### Diverged branch
+
+```bash
+$ gitorch
+Branch has diverged from remote.
+
+• Branch has diverged from origin/main (ahead by 2, behind by 5); consider `git pull --rebase`.
+```
+
+---
+
+### Dirty working tree
+
+```bash
+$ gitorch
+Branch is up to date with remote.
+
+• Working tree has uncommitted changes.
+```
+
+---
+
+### No remote configured
+
+```bash
+$ gitorch
+No remote "origin" configured; add it with `git remote add origin <url>`.
+```
+
+---
+
+### Detached HEAD
+
+```bash
+$ gitorch
+HEAD is detached.
+
+• HEAD is detached; checkout a branch (e.g. `git switch main`) before running gitorch.
+```
+
+---
+
+### Quiet mode
+
+```bash
+$ gitorch -quiet
+Branch is behind remote.
+```
+
+---
+
+### JSON output
+
+```bash
+$ gitorch -json
+```
+
+Example output:
+
+```json
+{
+  "state": {
+    "repoPath": ".",
+    "currentBranch": "main",
+    "defaultBranch": "main",
+    "remoteName": "origin",
+    "aheadBy": 0,
+    "behindBy": 2,
+    "dirty": false,
+    "hasRemote": true
+  },
+  "advice": {
+    "codes": ["behind_only"],
+    "summary": "Branch is behind remote.",
+    "details": [
+      "Branch is behind origin/main by 2 commits; consider pulling."
+    ]
+  }
+}
+```
+
+---
+
+## Design goals
+
+* Be explicit, not clever
+* Prefer guidance over raw Git output
+* Fail gracefully when information is missing
+* Stay dependency-light and scriptable
 
 ---
 
 ## License
 
-This project is licensed under the MIT License — see `LICENSE.md` for details.
+MIT
