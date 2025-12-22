@@ -19,9 +19,18 @@ func main() {
 	quiet := flag.Bool("quiet", false, "print summary only")
 	jsonOut := flag.Bool("json", false, "print JSON output")
 
+	mode := flag.String("mode", "current", "comparison mode: current or default")
+
 	flag.Parse()
 
-	state, err := gitstate.Inspect(".", *defaultBranch, *remoteName)
+	switch *mode {
+	case "current", "default":
+		// valid
+	default:
+		log.Fatalf("invalid -mode %q (expected: current or default)", *mode)
+	}
+
+	state, err := gitstate.Inspect(".", *defaultBranch, *remoteName, *mode)
 	if err != nil {
 		log.Fatal(err)
 	}
