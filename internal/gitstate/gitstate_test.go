@@ -38,6 +38,13 @@ func newTempRepo(t *testing.T) string {
 	return dir
 }
 
+func cloneRepo(t *testing.T, remoteDir string) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "clone", remoteDir, ".")
+	return dir
+}
+
 func bytesTrimSpace(b []byte) []byte {
 	start, end := 0, len(b)
 	for start < end && (b[start] == ' ' || b[start] == '\n' || b[start] == '\t' || b[start] == '\r') {
@@ -65,7 +72,7 @@ func TestInspect_UpToDate(t *testing.T) {
 	runGit(t, repo, "remote", "add", "origin", remoteDir)
 	runGit(t, repo, "push", "-u", "origin", defaultBranch)
 
-	state, err := gitstate.Inspect(repo, defaultBranch, "origin")
+	state, err := gitstate.Inspect(repo, defaultBranch, "origin", "default")
 	if err != nil {
 		t.Fatalf("Inspect failed: %v", err)
 	}
@@ -103,7 +110,7 @@ func TestInspect_Dirty(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	state, err := gitstate.Inspect(repo, defaultBranch, "origin")
+	state, err := gitstate.Inspect(repo, defaultBranch, "origin", "default")
 	if err != nil {
 		t.Fatalf("Inspect failed: %v", err)
 	}
@@ -129,7 +136,7 @@ func TestInspect_MissingDefaultLocal(t *testing.T) {
 
 	runGit(t, repo, "push", "-u", "origin", currentBranch)
 
-	state, err := gitstate.Inspect(repo, "nonexistent", "origin")
+	state, err := gitstate.Inspect(repo, "nonexistent", "origin", "default")
 	if err != nil {
 		t.Fatalf("Inspect failed: %v", err)
 	}
@@ -155,7 +162,7 @@ func TestInspect_MissingDefaultRemote(t *testing.T) {
 	runGit(t, repo, "remote", "add", "origin", remoteDir)
 
 	// Deliberately do NOT push defaultBranch, so remote default branch doesn't exist
-	state, err := gitstate.Inspect(repo, defaultBranch, "origin")
+	state, err := gitstate.Inspect(repo, defaultBranch, "origin", "default")
 	if err != nil {
 		t.Fatalf("Inspect failed: %v", err)
 	}
@@ -183,12 +190,109 @@ func TestInspect_DetachedHEAD(t *testing.T) {
 	firstCommit := string(bytesTrimSpace(out))
 	runGit(t, repo, "checkout", firstCommit)
 
-	state, err := gitstate.Inspect(repo, "main", "origin") // branch/remote values don't matter much here
+	state, err := gitstate.Inspect(repo, "main", "origin", "current") // branch/remote values don't matter much here
 	if err != nil {
 		t.Fatalf("Inspect failed: %v", err)
 	}
 
 	if !state.DetachedHEAD {
 		t.Fatalf("expected DetachedHEAD=true")
+	}
+}
+
+func TestInspect_CurrentMode_UpToDate(t *testing.T) {
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--bare", ".")
+
+	// Seed origin with an initial commit
+	seed := newTempRepo(t)
+	out, err := exec.Command("git", "-C", seed, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse failed: %v\n%s", err, string(out))
+	}
+	defaultBranch := string(bytesTrimSpace(out))
+
+	runGit(t, seed, "remote", "add", "origin", origin)
+	runGit(t, seed, "push", "-u", "origin", defaultBranch)
+
+	// Clone into working repo (will have upstream configured)
+	repo := cloneRepo(t, origin)
+
+	state, err := gitstate.Inspect(repo, defaultBranch, "origin", "current")
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	if state.DetachedHEAD {
+		t.Fatalf("did not expect detached HEAD")
+	}
+	if !state.HasUpstream {
+		t.Fatalf("expected HasUpstream=true")
+	}
+	if state.AheadBy != 0 || state.BehindBy != 0 {
+		t.Fatalf("expected ahead/behind 0, got %d/%d", state.AheadBy, state.BehindBy)
+	}
+}
+
+func TestInspect_CurrentMode_NoUpstream(t *testing.T) {
+	repo := newTempRepo(t)
+
+	// Create a new branch that has no upstream
+	runGit(t, repo, "checkout", "-b", "feature/no-upstream")
+
+	state, err := gitstate.Inspect(repo, "main", "origin", "current")
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	if state.DetachedHEAD {
+		t.Fatalf("did not expect detached HEAD")
+	}
+	if state.HasUpstream {
+		t.Fatalf("expected HasUpstream=false")
+	}
+	if state.AheadBy != 0 || state.BehindBy != 0 {
+		t.Fatalf("expected ahead/behind 0 when no upstream, got %d/%d", state.AheadBy, state.BehindBy)
+	}
+}
+
+func TestInspect_CurrentMode_BehindUpstream(t *testing.T) {
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--bare", ".")
+
+	// Seed origin
+	seed := newTempRepo(t)
+	out, err := exec.Command("git", "-C", seed, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse failed: %v\n%s", err, string(out))
+	}
+	defaultBranch := string(bytesTrimSpace(out))
+
+	runGit(t, seed, "remote", "add", "origin", origin)
+	runGit(t, seed, "push", "-u", "origin", defaultBranch)
+
+	// Two clones: one will be "behind"
+	repoA := cloneRepo(t, origin) // will remain behind
+	repoB := cloneRepo(t, origin) // will push an extra commit
+
+	// Make a new commit in repoB and push
+	if err := os.WriteFile(filepath.Join(repoB, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, repoB, "add", "new.txt")
+	runGit(t, repoB, "commit", "-m", "new commit")
+	runGit(t, repoB, "push", "origin", defaultBranch)
+
+	// Now repoA should be behind after fetch (Inspect will fetch if HasRemote)
+	state, err := gitstate.Inspect(repoA, defaultBranch, "origin", "current")
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	if !state.HasUpstream {
+		t.Fatalf("expected HasUpstream=true")
+	}
+	if state.BehindBy == 0 {
+		t.Fatalf("expected BehindBy>0, got %d (AheadBy=%d)", state.BehindBy, state.AheadBy)
 	}
 }

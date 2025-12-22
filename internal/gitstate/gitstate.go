@@ -27,9 +27,25 @@ type State struct {
 	MissingDefaultRemote bool
 }
 
+func aheadBehind(repoPath, leftRef, rightRef string) (ahead int, behind int, err error) {
+	spec := fmt.Sprintf("%s...%s", leftRef, rightRef)
+
+	out, err := runGitOutput(repoPath, "rev-list", "--left-right", "--count", spec)
+	if err != nil {
+		return 0, 0, fmt.Errorf("unable to determine branch status: %w", err)
+	}
+
+	parts := strings.Fields(out)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("unexpected rev-list output %q", out)
+	}
+
+	return parseAheadBehind(parts[0], parts[1])
+}
+
 // Inspect inspects the Git repository at repoPath and returns a summary of the
 // state of DefaultBranch relative to RemoteName/DefaultBranch.
-func Inspect(repoPath, defaultBranch, remoteName string) (State, error) {
+func Inspect(repoPath, defaultBranch, remoteName string, mode string) (State, error) {
 	s := State{
 		RepoPath:      repoPath,
 		DefaultBranch: defaultBranch,
@@ -80,51 +96,70 @@ func Inspect(repoPath, defaultBranch, remoteName string) (State, error) {
 		}
 	}
 
-	// Determine ahead/behind status relative to remote/defaultBranch.
-	// First detect whether the local and remote default branches actually exist.
-
-	localRef := fmt.Sprintf("refs/heads/%s", defaultBranch)
-	remoteRef := fmt.Sprintf("refs/remotes/%s/%s", remoteName, defaultBranch)
-
-	if err := runGit(repoPath, "show-ref", "--verify", "--quiet", localRef); err != nil {
-		s.MissingDefaultLocal = true
-	}
-
-	if s.HasRemote {
-		if err := runGit(repoPath, "show-ref", "--verify", "--quiet", remoteRef); err != nil {
-			s.MissingDefaultRemote = true
-		}
-	}
-
-	// If either side is missing, we cannot compute ahead/behind counts.
-	// Leave AheadBy/BehindBy at 0 and return gracefully.
-	if s.MissingDefaultLocal || s.MissingDefaultRemote {
-		return s, nil
-	}
-
-	// At this point both local and remote default branches exist.
-	spec := fmt.Sprintf("%s...%s/%s", defaultBranch, remoteName, defaultBranch)
-
-	out, err := runGitOutput(repoPath, "rev-list", "--left-right", "--count", spec)
-	if err != nil {
-		return s, fmt.Errorf("unable to determine branch status: %w", err)
-	}
-
-	parts := strings.Fields(out)
-	if len(parts) != 2 {
-		return s, fmt.Errorf("unexpected rev-list output %q", out)
-	}
-
-	ahead, behind, err := parseAheadBehind(parts[0], parts[1])
-	if err != nil {
-		return s, err
-	}
-	s.AheadBy = ahead
-	s.BehindBy = behind
-
 	// Check if working tree is dirty
 	if dirtyOut, err := runGitOutput(repoPath, "status", "--porcelain"); err == nil {
 		s.Dirty = strings.TrimSpace(dirtyOut) != ""
+	}
+
+	// Determine ahead/behind based on mode.
+	switch mode {
+	case "default":
+		// Determine ahead/behind status relative to remote/defaultBranch.
+		// First detect whether the local and remote default branches actually exist.
+
+		localRef := fmt.Sprintf("refs/heads/%s", defaultBranch)
+		remoteRef := fmt.Sprintf("refs/remotes/%s/%s", remoteName, defaultBranch)
+
+		if err := runGit(repoPath, "show-ref", "--verify", "--quiet", localRef); err != nil {
+			s.MissingDefaultLocal = true
+			return s, nil
+		}
+
+		// In default mode, remote must exist; otherwise we cannot compare to remote/defaultBranch.
+		if !s.HasRemote {
+			s.MissingDefaultRemote = true
+			return s, nil
+		}
+
+		if err := runGit(repoPath, "show-ref", "--verify", "--quiet", remoteRef); err != nil {
+			s.MissingDefaultRemote = true
+			return s, nil
+		}
+
+		// At this point both local and remote default branches exist.
+		ahead, behind, err := aheadBehind(
+			repoPath,
+			defaultBranch,
+			fmt.Sprintf("%s/%s", remoteName, defaultBranch),
+		)
+		if err != nil {
+			return s, err
+		}
+		s.AheadBy = ahead
+		s.BehindBy = behind
+
+	case "current":
+		// Compare current branch against its upstream.
+		if s.DetachedHEAD {
+			return s, nil
+		}
+		if s.CurrentBranch == "" {
+			return s, nil
+		}
+		if !s.HasUpstream || strings.TrimSpace(s.Upstream) == "" {
+			return s, nil
+		}
+
+		// Use HEAD vs upstream for comparison.
+		ahead, behind, err := aheadBehind(repoPath, "HEAD", s.Upstream)
+		if err != nil {
+			return s, err
+		}
+		s.AheadBy = ahead
+		s.BehindBy = behind
+
+	default:
+		return s, fmt.Errorf("invalid mode %q (expected: current or default)", mode)
 	}
 
 	return s, nil
