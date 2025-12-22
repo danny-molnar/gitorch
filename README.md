@@ -11,9 +11,14 @@ It focuses on *state and guidance*, not raw Git output.
 
 ## What gitorch does
 
-Given a repository, a default branch, and a remote, gitorch:
+By default, gitorch inspects the current branch and compares it against its configured upstream.
 
-* Compares the local default branch against the remote default branch
+Optionally, it can compare a default branch (e.g. main) against the remote default branch.
+
+* Compares the current branch against its upstream (default behaviour)
+
+* Optionally compares a default branch against the remote default branch
+
 * Detects:
 
   * ahead / behind / diverged states
@@ -33,7 +38,7 @@ Given a repository, a default branch, and a remote, gitorch:
 ## Installation
 
 ```bash
-go install github.com/danny-molnar/gitorch/cmd/gitorch@latest
+go install github.com/danny-molnar/gitorch/cmd/gitorch@v0.2.0
 ```
 
 ---
@@ -46,12 +51,13 @@ gitorch [flags]
 
 ### Flags
 
-| Flag      | Description                        | Default  |
-| --------- | ---------------------------------- | -------- |
-| `-branch` | Default branch to compare against  | `main`   |
-| `-remote` | Remote name to compare against     | `origin` |
-| `-quiet`  | Print summary only                 | `false`  |
-| `-json`   | Print JSON output (state + advice) | `false`  |
+| Flag      | Description                              | Default   |
+| --------- | ---------------------------------------- | --------- |
+| `-mode`   | Comparison mode: `current` or `default`  | `current` |
+| `-branch` | Default branch to compare against        | `main`    |
+| `-remote` | Remote name to compare against           | `origin`  |
+| `-quiet`  | Print summary only                       | `false`   |
+| `-json`   | Print JSON output (state + advice)       | `false`   |
 
 > Note: gitorch uses Go’s standard `flag` package, so flags are single-dash
 > (e.g. `-quiet`, not `--quiet`).
@@ -59,6 +65,24 @@ gitorch [flags]
 ---
 
 ## Examples
+
+By default, gitorch compares the current branch against its upstream.
+
+```bash
+$ gitorch
+Branch is ahead of remote.
+
+• Branch is ahead of origin/feature-x by 2 commits; consider pushing.
+```
+
+### Default branch vs remote default
+
+```bash
+$ gitorch -mode default
+Branch is behind remote.
+
+• Branch is behind origin/main by 3 commits; consider pulling.
+```
 
 ### Up-to-date branch
 
